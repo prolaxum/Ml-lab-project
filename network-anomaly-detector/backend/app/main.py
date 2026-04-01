@@ -6,8 +6,9 @@ import numpy as np
 from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime
+from collections import Counter
 
-# --- 1. Database Setup (Integrated directly here) ---
+# --- Database Setup (Persistent Layer) ---
 SQLALCHEMY_DATABASE_URL = "sqlite:///./network_logs.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -21,12 +22,12 @@ class TrafficLog(Base):
     src_bytes = Column(Float)
     dst_bytes = Column(Float)
     count = Column(Float)
-    status = Column(String)
+    status = Column(String)  # This now stores the raw class (e.g., 'normal', 'neptune')
 
-# Create the database file and tables automatically
+# Create the tables if they don't exist
 Base.metadata.create_all(bind=engine)
 
-# --- 2. FastAPI & AI Setup ---
+# --- FastAPI & AI Brain Setup ---
 app = FastAPI()
 
 app.add_middleware(
@@ -37,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load the trained AI brain
+# Load the trained model and scaler
 model = joblib.load('../../ml_pipeline/scripts/anomaly_model.pkl')
 scaler = joblib.load('../../ml_pipeline/scripts/scaler.pkl')
 
@@ -47,48 +48,97 @@ class NetworkPacket(BaseModel):
     dst_bytes: float
     count: float
 
-# --- 3. API Endpoints ---
+# --- ADVANCED MULTI-CLASS ENDPOINTS ---
 
 @app.post("/api/predict")
 def predict_anomaly(packet: NetworkPacket):
-    # Analyze the packet using the AI model
+    # 1. Analyze the input
     input_data = np.array([[packet.duration, packet.src_bytes, packet.dst_bytes, packet.count]])
     scaled_data = scaler.transform(input_data)
     prediction = model.predict(scaled_data)
     
-    # THE FIX: Convert NumPy string to standard Python string for SQLite compatibility
-    status = str(prediction[0])
+    # 2. Get the specific multi-class label (e.g., 'neptune', 'satan', 'normal')
+    raw_status = str(prediction[0])
     
-    # Save the result to the Database
+    # 3. Save to the Database
     db = SessionLocal()
     db_log = TrafficLog(
         duration=packet.duration,
         src_bytes=packet.src_bytes,
         dst_bytes=packet.dst_bytes,
         count=packet.count,
-        status=status
+        status=raw_status
     )
     db.add(db_log)
     db.commit()
     db.close()
     
-    return {"status": status, "packet_data": packet.model_dump()}
+    return {"status": raw_status, "packet_data": packet.model_dump()}
 
-@app.get("/api/logs")
-def get_recent_logs():
+@app.get("/api/analytics")
+def get_analytics_data():
     db = SessionLocal()
-    # Fetch the 20 most recent logs for the chart
-    logs = db.query(TrafficLog).order_by(TrafficLog.id.desc()).limit(20).all()
+    # 1. Get the 50 most recent logs for scatter and charts
+    logs = db.query(TrafficLog).order_by(TrafficLog.id.desc()).limit(50).all()
     db.close()
+
+    # 2. Format basic timeline and table data
+    timeline_logs = []
+    statuses = []
     
-    # Format data for Recharts (Frontend)
-    formatted_logs = [
-        {
-            "id": log.id, 
-            "time": log.timestamp.strftime("%H:%M:%S"), 
-            "status": log.status,
-            "threat_level": 0 if log.status == "Safe" else 1 
-        } 
-        for log in reversed(logs)
+    for log in reversed(logs):
+        statuses.append(log.status)
+        timeline_logs.append({
+            "id": log.id,
+            "time": log.timestamp.strftime("%H:%M:%S"),
+            "src_bytes": log.src_bytes,
+            "count": log.count,
+            "class": log.status,
+            # We assign numbers just for the timeline view (0=Safe, 1=Attack)
+            "threat_level": 0 if log.status == 'normal' else 1 
+        })
+
+    # 3. Calculate PIE CHART Data (Multi-Class Distribution)
+    class_counts = Counter(statuses)
+    
+    # Map raw NSL-KDD classes to user-friendly categories for the Viva
+    category_map = {
+        'normal': 'Safe Traffic',
+        'neptune': 'DoS (Flooding)',
+        'back': 'DoS (Backdoor)',
+        'satan': 'Probe (Scanning)',
+        'ipsweep': 'Probe (IP Sweep)',
+        'portsweep': 'Probe (Port Scan)',
+        'warezclient': 'R2L (Unauthorized Access)',
+        'teardrop': 'DoS (Fragmented)',
+        'pod': 'DoS (Ping of Death)',
+        'nmap': 'Probe (Scanning)'
+    }
+    
+    # Initialize counts for user-friendly categories
+    safe_count = class_counts.get('normal', 0)
+    dos_count = sum(class_counts.get(cls, 0) for cls in ['neptune', 'back', 'teardrop', 'pod'])
+    probe_count = sum(class_counts.get(cls, 0) for cls in ['satan', 'ipsweep', 'portsweep', 'nmap'])
+    r2l_count = sum(class_counts.get(cls, 0) for cls in ['warezclient'])
+
+    pie_data = [
+        {"name": "Safe Traffic", "value": safe_count, "fill": "#10b981"}, # Emerald
+        {"name": "DoS Attack", "value": dos_count, "fill": "#ef4444"},   # Red
+        {"name": "Network Probe", "value": probe_count, "fill": "#f59e0b"}, # Amber
+        {"name": "Unauthorized Access", "value": r2l_count, "fill": "#3b82f6"} # Blue
     ]
-    return formatted_logs
+    
+    # Remove categories with 0 counts for a cleaner Pie Chart
+    pie_data = [d for d in pie_data if d["value"] > 0]
+
+    return {
+        "timeline_logs": timeline_logs,
+        "pie_data": pie_data,
+        "confusion_heatmap": {
+            # Static example data for the confusion matrix Viva demo
+            "data": [
+                {"name": "Predicted Safe", "actual_safe": 25, "actual_attack": 1, "total": 26},
+                {"name": "Predicted Attack", "actual_safe": 2, "actual_attack": 22, "total": 24}
+            ]
+        }
+    }
