@@ -1,8 +1,11 @@
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
+import json
+from pathlib import Path
+
 import joblib
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
 
 # 1. Load the dataset
 file_path = "../data/KDDTrain+.txt" 
@@ -21,24 +24,38 @@ attack_map = {
 # Apply the mapping. If an attack isn't in our dictionary, label it 'Unknown Attack'
 data['target_class'] = data['label'].apply(lambda x: attack_map.get(x, 'Unknown Attack'))
 
-# 3. Features & Preprocessing
+# 3. Features
 features = ['duration', 'src_bytes', 'dst_bytes', 'count']
 X = data[features]
 y = data['target_class']
 
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
 
 # 4. Train the Multiclass Model
 print("Training new multiclass model. This might take a few seconds...")
-model = LogisticRegression(solver='lbfgs', max_iter=1000)
+model = RandomForestClassifier(
+    n_estimators=250,
+    random_state=42,
+    class_weight='balanced_subsample',
+    min_samples_leaf=1,
+    n_jobs=1
+)
 model.fit(X_train, y_train)
 
-print(f"New Model Accuracy: {model.score(X_test, y_test) * 100:.2f}%")
+y_pred = model.predict(X_test)
+metrics = {
+    "accuracy": round(accuracy_score(y_test, y_pred) * 100, 1),
+    "precision": round(precision_score(y_test, y_pred, average='weighted', zero_division=0) * 100, 1),
+    "recall": round(recall_score(y_test, y_pred, average='weighted', zero_division=0) * 100, 1),
+}
+print(f"New Model Accuracy: {metrics['accuracy']:.2f}%")
 
 # 5. Save the upgraded brain
 joblib.dump(model, 'anomaly_model.pkl')
-joblib.dump(scaler, 'scaler.pkl')
 print("Upgraded model saved successfully!")
+
+metrics_path = Path("model_metrics.json")
+metrics_path.write_text(json.dumps(metrics, indent=2))
+print(f"Metrics saved to {metrics_path.resolve()}")

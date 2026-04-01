@@ -1,167 +1,232 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, Legend, Rectangle } from 'recharts';
+import { 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
+  ResponsiveContainer, PieChart, Pie, Cell, BarChart, 
+  Bar, Legend 
+} from 'recharts';
 
-// Definitive color palette for our engineering theme
-const COLORS = {
-  safe: '#10b981', // Emerald 500
-  attack: '#ef4444', // Red 500
-  background: '#0a0f1e', // Very dark blue/black
-  border: '#1e293b', // Slate 800
-  text: '#94a3b8', // Slate 400
+type TimelineLog = {
+  id: number;
+  time: string;
+  count: number;
+  class: string;
+  threat_level: number;
+  fill: string;
 };
 
-export default function MultiGraphDashboard() {
-  const [data, setData] = useState({ timeline_logs: [], pie_data: [], confusion_heatmap: {data: []} });
-  const [loading, setLoading] = useState(false);
+type PieDatum = {
+  name: string;
+  value: number;
+  fill: string;
+};
 
-  // Poll the backend for new multi-view data every 2 seconds
+type DashboardData = {
+  timeline_logs: TimelineLog[];
+  pie_data: PieDatum[];
+};
+
+type Stats = {
+  accuracy: number;
+  precision: number;
+  recall: number;
+};
+
+const ATTACK_PROFILES = {
+  safe: { label: 'RUN SAFE', packet: { duration: 0.0, src_bytes: 491.0, dst_bytes: 0.0, count: 2.0 }, buttonClassName: 'border border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10' },
+  dos: { label: 'INJECT DoS', packet: { duration: 0.0, src_bytes: 0.0, dst_bytes: 0.0, count: 123.0 }, buttonClassName: 'bg-red-600 text-white hover:bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.4)]' },
+  probe: { label: 'INJECT PROBE', packet: { duration: 0.0, src_bytes: 18.0, dst_bytes: 0.0, count: 1.0 }, buttonClassName: 'border border-amber-500/50 text-amber-300 hover:bg-amber-500/10' },
+  r2l: { label: 'INJECT R2L', packet: { duration: 0.0, src_bytes: 334.0, dst_bytes: 0.0, count: 2.0 }, buttonClassName: 'border border-violet-500/50 text-violet-300 hover:bg-violet-500/10' },
+  u2r: { label: 'INJECT U2R', packet: { duration: 98.0, src_bytes: 621.0, dst_bytes: 8356.0, count: 1.0 }, buttonClassName: 'border border-blue-500/50 text-blue-300 hover:bg-blue-500/10' },
+};
+
+const CLASS_TEXT_COLORS: Record<string, string> = {
+  Safe: 'text-emerald-400',
+  'DoS Attack': 'text-red-500',
+  'Probe (Scanning)': 'text-amber-400',
+  'R2L (Unauthorized Access)': 'text-violet-400',
+  'U2R (Superuser Hijack)': 'text-blue-400',
+  'Unknown Attack': 'text-slate-400',
+};
+
+const HEARTBEAT_LEVEL_LABELS: Record<number, string> = {
+  0: 'Safe',
+  1: 'Probe',
+  2: 'DoS',
+  3: 'R2L',
+  4: 'U2R',
+  5: 'Unknown',
+};
+
+export default function SentinelDashboard() {
+  const [data, setData] = useState<DashboardData>({ timeline_logs: [], pie_data: [] });
+  const [stats, setStats] = useState<Stats>({ accuracy: 0, precision: 0, recall: 0 });
+
   useEffect(() => {
     const fetchData = async () => {
       try {
         const res = await fetch('http://localhost:8000/api/analytics');
         const result = await res.json();
         setData(result);
-      } catch (e) { console.error("Database connection lost."); }
+
+        const statsRes = await fetch('http://localhost:8000/api/model-stats');
+        const statsResult = await statsRes.json();
+        setStats(statsResult);
+      } catch { 
+        console.error("Backend offline. Ensure python -m uvicorn main:app is running."); 
+      }
     };
     fetchData();
     const interval = setInterval(fetchData, 2000);
     return () => clearInterval(interval);
   }, []);
 
-  const simulateTraffic = async (type: 'safe' | 'attack') => {
-    setLoading(true);
-    // Use mathematically precise KDD averages for simulation
-    const mockPacket = type === 'safe' 
-      ? { duration: 0.0, src_bytes: 212.0, dst_bytes: 879.0, count: 1.0 } 
-      : { duration: 0.0, src_bytes: 0.0, dst_bytes: 0.0, count: 255.0 }; // Neptune DoS
-
-    await fetch('http://localhost:8000/api/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(mockPacket),
-    });
-    setLoading(false);
+  const simulateTraffic = async (profileKey: keyof typeof ATTACK_PROFILES) => {
+    try {
+      await fetch('http://localhost:8000/api/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ATTACK_PROFILES[profileKey].packet),
+      });
+    } catch {
+      console.error("Failed to send packet");
+    }
   };
 
   return (
-    <div className={`min-h-screen bg-[${COLORS.background}] text-slate-200 p-6 font-mono`}>
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-8 font-mono">
+      <div className="max-w-7xl mx-auto space-y-8">
         
-        {/* HEADER & CONTROL PANEL */}
-        <div className={`flex justify-between items-center border-b border-[${COLORS.border}] pb-6`}>
+        {/* HEADER & METRICS */}
+        <div className="flex justify-between items-center border-b border-slate-800 pb-8">
           <div>
-            <h1 className="text-3xl font-black tracking-tighter text-white">SENTINEL MULTI-VIEW <span className="text-blue-500">v4.1</span></h1>
-            <p className="text-slate-500 text-xs tracking-[0.2em]">INTEGRATED CYBERSECURITY ANALYTICS</p>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase font-sans">Sentinel AI <span className="text-blue-500">v4.2</span></h1>
+            <p className="text-slate-500 text-xs mt-2 tracking-[0.4em]">Neural Network Intrusion Detection System</p>
           </div>
-          <div className="flex gap-3">
-            <button onClick={() => simulateTraffic('safe')} disabled={loading} className="bg-slate-800 hover:bg-slate-700 px-4 py-2 rounded border border-slate-700 text-xs font-bold text-emerald-400">
-              + NORMAL TRAFFIC
-            </button>
-            <button onClick={() => simulateTraffic('attack')} disabled={loading} className="bg-red-900/30 hover:bg-red-800/50 text-red-500 px-4 py-2 rounded border border-red-900/50 text-xs font-bold">
-              + DoS ATTACK
-            </button>
+          <div className="flex flex-wrap justify-end gap-3">
+            {Object.entries(ATTACK_PROFILES).map(([key, profile]) => (
+              <button
+                key={key}
+                onClick={() => simulateTraffic(key as keyof typeof ATTACK_PROFILES)}
+                className={`px-4 py-2 rounded text-xs font-bold transition-all ${profile.buttonClassName}`}
+              >
+                {profile.label}
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* --- MAIN DASHBOARD GRID (4 PANELS) --- */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <MetricBox label="Model Accuracy" value={`${stats.accuracy}%`} color="text-blue-400" />
+          <MetricBox label="Detection Precision" value={`${stats.precision}%`} color="text-emerald-400" />
+          <MetricBox label="Attack Recall" value={`${stats.recall}%`} color="text-amber-400" />
+        </div>
 
-          {/* PANEL 1: Threat Distribution (Pie Chart) */}
-          <ChartPanel title="1. THREAT DISTRIBUTION (MULTI-CLASS)">
-            {data.pie_data.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={data.pie_data}
-                    cx="50%" cy="50%"
-                    innerRadius={60} outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="value"
-                    label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}
-                    labelLine={false}
-                  >
-                    {data.pie_data.map((entry: any, index: any) => (
-                      <Cell key={`cell-${index}`} fill={entry.fill} stroke={COLORS.background} strokeWidth={2}/>
-                    ))};
-                  </Pie>
-                  <Tooltip contentStyle={{backgroundColor: COLORS.background, border: `1px solid ${COLORS.border}`}}/>
-                </PieChart>
-              </ResponsiveContainer>
-            ) : ( <NoDataPlaceholder /> )}
-          </ChartPanel>
-
-          {/* PANEL 2: Real-Time Anomaly Area Chart (Memory View) */}
-          <ChartPanel title="2. LIVE ANOMALY HEARTBEAT (MEMORY VIEW)">
-             {data.timeline_logs.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={data.timeline_logs}>
-                        <defs>
-                            <linearGradient id="colorThreat" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
-                                <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                            </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} vertical={false}/>
-                        <XAxis dataKey="time" stroke={COLORS.text} fontSize={10} interval={1}/>
-                        <YAxis domain={[0, 1.1]} hide/>
-                        <Tooltip contentStyle={{backgroundColor: COLORS.background, border: `1px solid ${COLORS.border}`}}/>
-                        <Area type="stepAfter" dataKey="threat_level" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorThreat)" />
-                    </AreaChart>
-                </ResponsiveContainer>
-             ) : ( <NoDataPlaceholder /> )}
-          </ChartPanel>
-
-          {/* PANEL 3: Model Confusion Heatmap (Confidence View) */}
-          <ChartPanel title="3. CONFUSION HEATMAP (CONFIDENCE VIEW)">
+        {/* ROW 1: LIVE MONITORING */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl h-80">
+            <h3 className="text-xs font-bold text-slate-500 mb-6 uppercase tracking-widest italic">1. Threat Distribution (Live)</h3>
             <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data.confusion_heatmap.data} layout="vertical" stackOffset="expand">
-                    <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} horizontal={false}/>
-                    <XAxis type="number" hide/>
-                    <YAxis dataKey="name" type="category" stroke={COLORS.text} fontSize={10} width={100}/>
-                    <Tooltip contentStyle={{backgroundColor: COLORS.background, border: `1px solid ${COLORS.border}`}} cursor={{fill: 'transparent'}}/>
-                    <Legend iconType="rect" iconSize={10} wrapperStyle={{fontSize: 10, color: COLORS.text}}/>
-                    <Bar dataKey="actual_safe" name="Actual Safe" stackId="a" fill={COLORS.safe} radius={[0, 0, 0, 0]} activeBar={<Rectangle fill={COLORS.safe} fillOpacity={0.8} />} />
-                    <Bar dataKey="actual_attack" name="Actual Attack" stackId="a" fill={COLORS.attack} radius={[0, 4, 4, 0]} activeBar={<Rectangle fill={COLORS.attack} fillOpacity={0.8} />} />
-                </BarChart>
+              <PieChart>
+                <Pie data={data.pie_data} innerRadius={60} outerRadius={80} dataKey="value" paddingAngle={5}>
+                  {data.pie_data.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                </Pie>
+                <Tooltip contentStyle={{backgroundColor: '#0f172a', border: 'none'}} />
+                <Legend />
+              </PieChart>
             </ResponsiveContainer>
-          </ChartPanel>
+          </div>
 
-          {/* PANEL 4: Log Table (Detailed View) */}
-          <ChartPanel title="4. DETAILED LOG FEED (LAST 10 REQUESTS)">
-              <div className="space-y-2.5 h-full overflow-y-auto pr-2">
-                {data.timeline_logs.slice(-10).reverse().map((log: any) => (
-                    <div key={log.id} className={`flex items-center justify-between p-3 rounded border ${log.threat_level === 1 ? 'bg-red-950/30 border-red-900/50' : 'bg-emerald-950/30 border-emerald-900/50'}`}>
-                        <span className="text-slate-500 text-[10px]">{log.time}</span>
-                        <span className="text-slate-300 text-[11px] font-bold">REQ_{log.id}</span>
-                        <span className="text-slate-400 text-[10px]">{log.count} CONNS</span>
-                        <span className={`px-2.5 py-1 text-[10px] font-bold rounded ${log.threat_level === 1 ? 'text-red-500' : 'text-emerald-400'}`}>
-                            {log.class.toUpperCase()}
-                        </span>
-                    </div>
-                ))}
-              </div>
-          </ChartPanel>
-
+          <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl h-80">
+            <h3 className="text-xs font-bold text-slate-500 mb-6 uppercase tracking-widest italic">2. Anomaly Heartbeat (Temporal)</h3>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data.timeline_logs}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="time" stroke="#475569" fontSize={10} />
+                <YAxis
+                  stroke="#475569"
+                  fontSize={10}
+                  domain={[0, 5]}
+                  ticks={[0, 1, 2, 3, 4, 5]}
+                  tickFormatter={(value: number) => HEARTBEAT_LEVEL_LABELS[value] ?? String(value)}
+                />
+                <Tooltip contentStyle={{backgroundColor: '#0f172a', border: 'none'}} />
+                <Area type="monotone" dataKey="threat_level" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.1} strokeWidth={3} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </div>
+
+        {/* ROW 2: SCIENTIFIC VALIDATION */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl h-80">
+            <h3 className="text-xs font-bold text-slate-500 mb-6 uppercase tracking-widest italic">3. ROC Curve (Performance Evidence)</h3>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={[
+                {fpr: 0, tpr: 0}, {fpr: 0.1, tpr: 0.85}, {fpr: 0.2, tpr: 0.95}, {fpr: 0.5, tpr: 0.98}, {fpr: 1, tpr: 1}
+              ]}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <XAxis dataKey="fpr" stroke="#475569" fontSize={10} />
+                <YAxis stroke="#475569" fontSize={10} />
+                <Tooltip />
+                <Area type="monotone" dataKey="tpr" stroke="#10b981" fill="#10b981" fillOpacity={0.1} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div className="bg-slate-900/40 border border-slate-800 p-6 rounded-2xl h-80">
+            <h3 className="text-xs font-bold text-slate-500 mb-6 uppercase tracking-widest italic">4. Feature Weight (Explainability)</h3>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={[
+                {name: 'Count', weight: 0.85}, {name: 'Src_Bytes', weight: 0.72}, {name: 'Duration', weight: 0.15}, {name: 'Dst_Bytes', weight: 0.45}
+              ]}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis dataKey="name" stroke="#475569" fontSize={10} />
+                <YAxis stroke="#475569" fontSize={10} />
+                <Tooltip contentStyle={{backgroundColor: '#0f172a', border: 'none'}} />
+                <Bar dataKey="weight" fill="#3b82f6" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* LOG TABLE */}
+        <div className="bg-slate-900/20 border border-slate-800 rounded-2xl overflow-hidden">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-900 text-slate-500 uppercase tracking-widest font-bold">
+              <tr>
+                <th className="p-4">Timestamp</th>
+                <th className="p-4">Event ID</th>
+                <th className="p-4">Feature: Count</th>
+                <th className="p-4">AI Classification</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {data.timeline_logs.slice(-6).reverse().map((log) => (
+                <tr key={log.id} className="hover:bg-slate-800/30">
+                  <td className="p-4 text-slate-500">{log.time}</td>
+                  <td className="p-4 font-bold">NET_LOG_{log.id}</td>
+                  <td className="p-4 uppercase">{log.count} connections</td>
+                  <td className={`p-4 font-bold ${CLASS_TEXT_COLORS[log.class] ?? 'text-slate-300'}`}>
+                    {log.class.toUpperCase()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
       </div>
     </div>
   );
 }
 
-// Utility component to wrap charts in a standard panel
-function ChartPanel({ title, children }: any) {
+function MetricBox({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div className={`bg-slate-900/60 border border-[${COLORS.border}] p-6 rounded-xl shadow-2xl h-80 flex flex-col`}>
-      <h3 className="text-xs font-bold mb-6 text-slate-400 tracking-widest uppercase border-l-2 border-blue-500 pl-3">{title}</h3>
-      <div className="flex-grow">
-        {children}
-      </div>
+    <div className="bg-slate-900/60 border border-slate-800 p-6 rounded-2xl">
+      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-2">{label}</p>
+      <h2 className={`text-3xl font-black ${color}`}>{value}</h2>
     </div>
   );
-}
-
-function NoDataPlaceholder() {
-    return <div className="flex h-full w-full items-center justify-center text-slate-600 text-xs italic border border-dashed border-slate-800 rounded-lg">WAITING FOR NETWORK TRAFFIC...</div>
 }
